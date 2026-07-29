@@ -51,6 +51,18 @@ What you get after install:
 
 Your Claude login never touches the proxy (that keeps you inside Anthropic's terms), and all logins stay on your machine. Setup is agent-runnable: see the install prompt below.
 
+### 📊 [`gam-campaign-checkup`](skills/gam-campaign-checkup) — is my Google Ads campaign actually working?
+
+Turns Claude into a **Google Ads campaign evaluation coach for captive insurance agents**, built from the AiAi Mastermind *Google Ads Mastery Deep Dive* workshop. For agents whose campaign is already launched: upload your Google Ads screenshots/CSV and your carrier campaign-report export, and Claude walks the workshop's belt progression — find your six numbers, compute **Cost Per Quote** and **Cost Per Acquisition**, get a **Green / Yellow / Red Signal Light**, diagnose search-term waste and competition, and commit to **one** tuning move for the week.
+
+What makes it different from asking Claude about Google Ads cold:
+- every benchmark and decision rule comes from the curated workshop methodology (transcribed live teaching + real coaching calls), not generic internet ad advice,
+- it refuses to grade a campaign on clicks and impressions — spend, leads, and households are the only scoreboard,
+- it never drifts into campaign *setup* territory; it evaluates and tunes what's already installed,
+- one action per cycle, with a date — the way the workshop actually coaches it.
+
+Web-first: this one is designed for **claude.ai** — upload [`gam-campaign-checkup.zip`](skills/gam-campaign-checkup/gam-campaign-checkup.zip) under Settings > Capabilities > Skills (see the [skill README](skills/gam-campaign-checkup/README.md)). It also works as a Claude Code skill folder.
+
 ## Install
 
 **Tip:** You can grab a single skill folder instead of cloning the whole repository:
@@ -75,6 +87,9 @@ cp aiai-mastermind-tools-and-skills/skills/gpt-image/gpt-image.command.md ~/.cla
 
 # generate-me
 cp -R aiai-mastermind-tools-and-skills/skills/generate-me ~/.claude/skills/generate-me
+
+# gam-campaign-checkup (claude.ai users: upload the zip instead — see its README)
+cp -R aiai-mastermind-tools-and-skills/skills/gam-campaign-checkup ~/.claude/skills/gam-campaign-checkup
 ```
 
 Then just ask: *"build a wiki LLM from these PDFs"* or *"generate a hero image of …"* and the matching skill activates. (`gpt-image` needs the Codex CLI installed and signed in to ChatGPT via `codex login`.)
