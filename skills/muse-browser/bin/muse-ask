@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Ask Meta's Muse (muse.ai) a research question in Agent Chrome, in a fresh side chat.
+
+  muse-ask "<question>" [--timeout S] [--out FILE] [--json] [--debug]
+
+Muse is Meta's personal AI agent (signed in through your Facebook account). It can search
+Facebook, Instagram and Threads posts your account can see, including groups you belong to, and it
+can also act (message, post, buy with approval). This driver therefore:
+  * opens a NEW side chat every time (never the main chat) and refuses to send if the chat it
+    landed in already has messages;
+  * prefixes every question with a read-only, no-memory, neutral-research instruction;
+  * never approves anything Muse asks to do.
+Muse has no incognito mode and its memory cannot be switched off; the preface is the isolation.
+
+It opens the side chat by URL (muse.ai/thread/new) and types with fill + Enter, so it works while
+the tab sits behind other tabs.
+Statuses: done, partial (Muse still working at the timeout; incomplete answer), signin_needed,
+isolation_unavailable, needs_approval, rate_limited, ui_changed, timeout, not_running, error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import time
+
+
+# acdriver.py ships next to this script (a copy in each research skill, so each folder works alone).
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import acdriver as ac  # noqa: E402
+
+URL = "https://muse.ai/"
+NEW_SIDE_CHAT = "https://muse.ai/thread/new"   # opens an empty side chat directly (no clicks, no Tab walk)
+# Keep in step with the copy quoted in muse-browser/SKILL.md ("Drive it yourself").
+PREFACE = ("[Research request from my research agent. Read-only: do not post, comment, react, message "
+           "anyone, join or follow anything, buy anything or take any other action on any account. Do not save "
+           "anything from this side chat to memory, goals or ideas. Answer as neutral research and do not tailor "
+           "it to me.] ")
+SUFFIX = (" For every post, Reel or group discussion you cite, give the link, the creator, page or group, the "
+          "date and the engagement you can see. Say plainly if you found little.")
+RUNNING = re.compile(r"^(is working|Assistant is typing|Searching|Browsing|Reading|Thinking|Working|Looking)", re.I)
+LIMIT = re.compile(r"(reached (your|the) (daily |weekly )?(limit|usage)|out of (tokens|usage)|usage limit|"
+                   r"upgrade to (Power|Maximum)|try again later)", re.I)
+APPROVAL_TEXT = re.compile(r"(\bI need your approval\b|\bneeds your approval (to|before)\b|"
+                           r"approve (this|it) (in|from) (the )?Approvals)", re.I)
+APPROVAL_BUTTON = re.compile(r"^(Approve|Allow|Confirm|Deny|Reject|Send|Post)$")
+
+
+def signed_out(page):
+    return (ac.looks_signed_out(page) or "auth.muse.ai" in page.url or
+            page.find(("button", "link"), re.compile(r"^(Log in|Sign in|Continue with Facebook)$")) is not None)
+
+
+def message_log(page):
+    return page.find("log", "Chat messages")
+
+
+def groups(log):
+    """Top-level message groups in the chat log: (is_user, node)."""
+    out = []
+    for child in log.children:
+        if not child.children:
+            continue  # timestamps and spacers
+        is_user = any((n.text or "").strip() == "You:" for n in child.walk())
+        out.append((is_user, child))
+    return out
+
+
+def is_running(page):
+    if page.find("button", re.compile(r"^Stop( task)?$")):
+        return True
+    # Status lines only outside the chat log, so an answer that says "Working parents..." can't stall it.
+    log = message_log(page)
+    inside = {id(n) for n in log.walk()} if log is not None else set()
+    return any(RUNNING.match((n.text or n.name or "").strip()) for n in page.nodes()
+               if id(n) not in inside and n.role in ("generic", "status", "text")
+               and len(n.text or n.name or "") < 90)
+
+
+def approval_requested(page, text, prompt_start):
+    """Muse asking to act: an Approve/Allow-style control inside its replies, or an explicit request."""
+    log = message_log(page)
+    if log is not None:
+        gs = groups(log)
+        mine = max((i for i, (u, node) in enumerate(gs)
+                    if u and prompt_start in " ".join((n.text or "") for n in node.walk())), default=None)
+        if mine is not None:
+            for is_user, node in gs[mine + 1:]:
+                if not is_user and page.find("button", APPROVAL_BUTTON, within=node):
+                    return True
+    if page.find("button", "Approvals", pred=lambda n: n.attrs.get("pressed")) and \
+            page.find("button", APPROVAL_BUTTON):
+        return True
+    # Prose check only on Muse's closing lines (not quoted posts in the body of a research answer).
+    tail = "\n".join((text or "").strip().splitlines()[-3:])
+    return bool(APPROVAL_TEXT.search(tail))
+
+
+def fresh_side_chat(page):
+    """Positive proof of a brand-new side chat: the /thread/new route, the side-chat back button,
+    and an empty message log (and exactly one log and one Message box, so find() can't pick the
+    main chat's copy)."""
+    if len(page.find_all("log", "Chat messages")) != 1 or len(page.find_all("textbox", "Message")) != 1:
+        return False
+    log = message_log(page)
+    return (page.url.rstrip("/").endswith("/thread/new") and
+            page.find("button", "Back to main chat") is not None and
+            log is not None and not any(True for n in log.walk() if n is not log and (n.text or n.name)))
+
+
+def answer_from(page, prompt_start):
+    log = message_log(page)
+    if log is None:
+        return None, []
+    gs = groups(log)
+    mine = None
+    for i, (is_user, node) in enumerate(gs):
+        text = " ".join((n.text or "") for n in node.walk())
+        if is_user and prompt_start in text:
+            mine = i
+    if mine is None:
+        return None, []
+    replies = [node for is_user, node in gs[mine + 1:] if not is_user]
+    parts, links = [], []
+    for node in replies:
+        md = ac.to_markdown(node, base_url=URL)
+        if md.strip():
+            parts.append(md.strip())
+        links += [l for l in ac.links_in(node) if l["url"].startswith("http") and "muse.ai" not in l["url"]]
+    seen, unique = set(), []
+    for l in links:
+        if l["url"] not in seen:
+            seen.add(l["url"])
+            unique.append(l)
+    return "\n\n".join(parts).strip(), unique
+
+
+def run(question, timeout, debug):
+    started = time.time()
+    result = {"lane": "muse", "mode": "side-chat", "isolation": "new-side-chat+read-only-preface",
+              "status": "error"}
+    prompt = PREFACE + question.strip() + SUFFIX
+    with ac.Session("muse", debug=debug) as s:
+        s.open(NEW_SIDE_CHAT)
+        page = None
+        for _ in range(15):
+            time.sleep(2)
+            page = s.snapshot()
+            if fresh_side_chat(page) or signed_out(page):
+                break
+        if signed_out(page):
+            result.update(status="signin_needed", message="muse.ai is signed out in Agent Chrome (sign in through Facebook)")
+            return result
+        if not fresh_side_chat(page):
+            result.update(status="isolation_unavailable",
+                          message="muse.ai/thread/new did not open an empty side chat; refusing to write anywhere")
+            return result
+        s.fill(page.find("textbox", "Message"), prompt)
+        time.sleep(1)
+        page = s.snapshot()
+        if not fresh_side_chat(page):
+            result.update(status="isolation_unavailable", message="side chat changed before sending; not sent")
+            return result
+        if not ac.composer_ready(page, page.find("textbox", "Message"), PREFACE):
+            result.update(status="ui_changed", message="the Message box lost focus before sending; not sent")
+            return result
+        s.press("Enter")
+        s.log("sent")
+
+        prompt_start = PREFACE[:60]
+        last, stable, deadline, limit_hits = None, 0, started + timeout, 0
+        while True:
+            time.sleep(5)
+            page = s.snapshot()
+            text, links = answer_from(page, prompt_start)
+            running = is_running(page)
+            lines = [l for l in (text or "").strip().splitlines() if l.strip()]
+            if len(lines) == 1 and len(lines[0]) < 90 and RUNNING.match(lines[0].strip()):
+                running = True  # the reply so far is only Muse's progress line ("Searching Instagram…")
+            if approval_requested(page, text, prompt_start):
+                result.update(status="needs_approval", answer_markdown=text,
+                              message="Muse asked for approval to act; nothing was approved. Tell the owner; "
+                                      "the pending request is in the newest Muse side chat")
+                return result
+            if not running and not text:
+                # A limit notice is an alert/status/dialog outside the chat log and sidebar; never
+                # our own question or side-chat titles.
+                limit_hits = limit_hits + 1 if LIMIT.search(ac.banner_text(page)) else 0
+                if limit_hits >= 2:
+                    result.update(status="rate_limited", message="Muse reports a usage limit")
+                    return result
+            if text and not running:
+                stable = stable + 1 if text == last else 0
+                if stable >= 1:
+                    break
+            last = text
+            if time.time() >= deadline:
+                if text:
+                    result.update(status="partial", answer_markdown=text, sources=links,
+                                  message=f"Muse was still working after {timeout}s; this is an incomplete answer")
+                    return result
+                result.update(status="timeout", message=f"no answer after {timeout}s")
+                return result
+            s.log("running" if running else "waiting")
+        if approval_requested(page, text, prompt_start):
+            result.update(status="needs_approval", answer_markdown=text,
+                          message="Muse asked for approval to act; nothing was approved. Tell the owner; "
+                                  "the pending request is in the newest Muse side chat")
+            return result
+        result["answer_markdown"] = text
+        result["sources"] = links
+        result["status"] = "done"
+    result["elapsed_s"] = round(time.time() - started)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("question")
+    parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--out")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+    try:
+        result = run(args.question, args.timeout, args.debug)
+    except ac.DriverError as exc:
+        result = {"lane": "muse", "status": exc.status, "message": str(exc)}
+    except ac.Stopped as exc:
+        result = {"lane": "muse", "status": "timeout", "message": str(exc)}
+    except Exception as exc:  # never die without a JSON status
+        result = {"lane": "muse", "status": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}
+    if result.get("status") in ("done", "partial", "needs_approval"):
+        result["file"] = ac.write_result("muse", args.question, result, args.out)
+    return ac.emit(result, args.json)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

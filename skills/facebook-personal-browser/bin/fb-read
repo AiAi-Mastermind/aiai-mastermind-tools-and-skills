@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Read one Facebook post (permalink) from your own signed-in account, read-only.
+
+  fb-read <facebook post URL> [--comments N] [--out FILE] [--json] [--debug]
+
+Opens the permalink in its own Agent Chrome tab, waits, reads the snapshot, closes the tab. It
+never clicks, types or presses a key on the page, so it cannot like, comment, share or join.
+It returns the post text, author/group, visible reaction count and the first N comments.
+
+Use it to verify and quote posts that muse-ask (or you) points to. One post per call; pace
+calls per facebook-personal-browser (4-10 s apart, about 15 per task, a few tasks a day).
+
+Statuses: done, signin_needed, checkpoint (stop all Facebook work and tell the owner),
+not_found, ui_changed, error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import random
+import re
+import sys
+import time
+import urllib.parse
+
+
+# acdriver.py ships next to this script (a copy in each research skill, so each folder works alone).
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import acdriver as ac  # noqa: E402
+
+CHECKPOINT = re.compile(r"(/checkpoint/|confirm (it['’]?s|that it['’]?s) you|you['’]?re temporarily blocked|"
+                        r"going too fast|suspicious activity|account (has been )?(locked|restricted|suspended)|"
+                        r"we limit how often)", re.I)
+GONE = re.compile(r"(this content isn['’]?t available|content (is|isn['’]?t) (no longer )?available|"
+                  r"this page isn['’]?t available|link may be broken)", re.I)
+
+
+FB_HOSTS = {"facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com"}
+
+
+def facebook_url(url):
+    """Strict check: plain https URL on a Facebook host, no userinfo/backslash/port tricks, no redirector."""
+    if re.search(r"[\\@\s\x00-\x1f]", url):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    return (parts.scheme == "https" and parts.port is None and parts.hostname in FB_HOSTS and
+            parts.netloc.lower() == parts.hostname and not parts.path.startswith(("/l.php", "/flx/")))
+
+
+def read(url, comments, debug):
+    if not facebook_url(url):
+        raise ac.DriverError("error", "fb-read only opens plain https://www.facebook.com/... post URLs")
+    url = ac.clean_url(url)
+    result = {"lane": "facebook", "url": url, "status": "error", "isolation": "personal-account-read-only"}
+    time.sleep(random.uniform(1.5, 4.0))  # never hit Facebook in a tight loop
+    with ac.Session("fbread", debug=debug) as s:
+        s.open(url)
+        page = None
+        for _ in range(6):
+            time.sleep(3)
+            page = s.snapshot()
+            if page.find("heading", re.compile(r"'s (Post|post|Reel|Video)$")) or ac.looks_signed_out(page):
+                break
+        final_host = urllib.parse.urlsplit(page.url).hostname if page.url else None
+        if final_host and final_host not in FB_HOSTS:
+            result.update(status="error", message="the page left facebook.com; nothing was read")
+            return result
+        heading = page.find("heading", re.compile(r"'s (Post|post|Reel|Video)$"))
+        # Checkpoint/unavailable screens are judged on the URL and on page chrome only, never on the post
+        # or comments, so a post that merely mentions "suspicious activity" can't trigger a stop.
+        post_nodes = set()
+        if heading is not None:
+            box = next((a for a in heading.ancestors() if a.role in ("dialog", "main")), None)
+            if box is not None:
+                post_nodes = {id(n) for n in box.walk()}
+        chrome = page.url + " " + " ".join((n.name or "") + " " + (n.text or "") for n in page.nodes()
+                                           if id(n) not in post_nodes and
+                                           n.role in ("heading", "generic", "text", "alert", "dialog"))
+        if "/checkpoint/" in page.url or CHECKPOINT.search(chrome):
+            result.update(status="checkpoint", message="Facebook shows a checkpoint or rate-limit screen. "
+                          "Stop all Facebook work today and tell the owner.")
+            return result
+        if ac.looks_signed_out(page):
+            result.update(status="signin_needed", message="facebook.com is signed out in Agent Chrome")
+            return result
+        if heading is None and GONE.search(chrome):
+            result.update(status="not_found", message="post is unavailable to this account")
+            return result
+        if heading is None:
+            result.update(status="ui_changed", message="no post dialog found (is this a post permalink?)")
+            return result
+        tops = list(heading.ancestors())
+        container = next((a for a in tops if a.role in ("dialog", "main")), None) or (tops[-1] if tops else heading)
+        order = list(container.walk())
+        after = order[order.index(heading):]
+        end = next((n for n in after if (n.role == "article" and (n.name or "").startswith("Comment by")) or
+                    (n.role == "button" and re.match(r"^(Like: |All reactions|Leave a comment)", n.name or ""))),
+                   None)
+        blocks = ac.between(container, heading, end) if end is not None else []
+        parts = []
+        for block in blocks:
+            if block.role == "blockquote" and ac._inline(block).strip() == "Facebook":
+                continue  # loading skeletons
+            md = ac.to_markdown(block, base_url="https://www.facebook.com/").strip()
+            md = re.sub(r"^(#+ .*?) Join$", r"\1", md, flags=re.M)
+            md = re.sub(r"(\s·)+\s*$", "", md, flags=re.M)
+            if md:
+                parts.append(md)
+        body = "\n\n".join(parts)
+        body = re.sub(r"^> Facebook\s*$", "", body, flags=re.M)   # loading skeletons
+        body = re.sub(r"\n{3,}", "\n\n", body).strip()
+        result["title"] = page.title
+        result["author"] = re.sub(r"'s (Post|post|Reel|Video)$", "", heading.name or "")
+        result["answer_markdown"] = body.strip()
+        reactions = page.find("button", re.compile(r"^(Like: \d|All reactions)"), within=container)
+        result["reactions"] = reactions.name if reactions else None
+        rows = []
+        for art in page.find_all("article", re.compile(r"^Comment by "), within=container)[:comments]:
+            rows.append({"who_when": art.name[len("Comment by "):],
+                         "text": re.sub(r"\s+", " ", ac.to_markdown(art, base_url="https://www.facebook.com/"))[:600]})
+        result["comments"] = rows
+        result["sources"] = [{"title": page.title, "url": ac.clean_url(url)}]
+        result["status"] = "done" if body else "ui_changed"
+        if not body:
+            result["message"] = "post dialog found but no body text"
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("url")
+    parser.add_argument("--comments", type=int, default=10)
+    parser.add_argument("--out")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+    try:
+        result = read(args.url, args.comments, args.debug)
+    except ac.DriverError as exc:
+        result = {"lane": "facebook", "status": exc.status, "message": str(exc)}
+    except ac.Stopped as exc:
+        result = {"lane": "facebook", "status": "timeout", "message": str(exc)}
+    except Exception as exc:  # never die without a JSON status
+        result = {"lane": "facebook", "status": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}
+    if result.get("status") == "done":
+        comments = "\n".join(f"- **{c['who_when']}**: {c['text']}" for c in result.get("comments", []))
+        if comments:
+            result["answer_markdown"] += "\n\n## Comments (first shown)\n\n" + comments
+        result["file"] = ac.write_result("facebook", ac.clean_url(args.url), result, args.out)
+    return ac.emit(result, args.json)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
