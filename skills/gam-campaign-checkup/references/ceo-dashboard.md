@@ -7,7 +7,7 @@ Phillip's rule: no single source tells the whole story. Combine all three before
 | Source | VOLUME — Am I getting enough? | QUALITY — Am I getting the right kind? | VALUE — Am I making money? |
 |---|---|---|---|
 | **Google Ads Dashboard** | Impressions; Clicks; Phone calls from ad; Impression share | Search Term report; Ad Strength; Quality Score (8+); Match-type distribution | Avg. CPC; Cost per conversion; Top-of-page rate |
-| **Campaign Report (`mysfdomain.com` CSV)** | Page views, filtered; Quote starts; Phone clicks; SMS clicks for context only | Tracking URL filter correct?; destination-page quality; mobile experience | **COST PER QUOTE = Spend / Total Leads — THIS IS THE NUMBER.** |
+| **Campaign Report (agency website dashboard CSV)** | Page views, filtered; Quote starts; Phone clicks; SMS clicks for context only | Tracking URL filter correct?; destination-page quality; mobile experience | **COST PER QUOTE = Spend / Total Leads — THIS IS THE NUMBER.** |
 | **CRM / Tracker** | Total quotes worked; Households written; Policies issued | Marketing source filled?; Multi-line ratio; Geographic match | Cost per acquisition; Premium per household; LTV comparison = ROI |
 
 “Never grade a campaign on clicks and impressions. Spend, leads, and households are the only scoreboard.”
@@ -34,7 +34,7 @@ Deck example:
 - Total Leads = 18
 - `$1,000 / 18 = $56 CPQ`
 
-Sweet spot for most State Farm auto campaigns: **$40 to $80 per quote**.
+Sweet spot for most captive auto campaigns: **$40 to $80 per quote**.
 
 Phillip's current-market framing: **“$65 is acceptable these days, it used to be a lot cheaper.”**
 
@@ -63,7 +63,7 @@ The decisive question: **Is CPA less than or equal to the member's household Lif
 - LTV = $1,400
 - The campaign spent more than the household is worth. Investigate.
 
-Use the member's own LTV whenever available. If unknown, the workbook permits **$1,500** as a starting estimate for a typical State Farm household; label it as an estimate.
+Use the member's own LTV whenever available. If unknown, the workbook permits **$1,500** as a starting estimate for a typical household; label it as an estimate.
 
 Phillip's rule of thumb from Geoff's review: about **$300 per acquired household** is “generally a good metric,” but the member's own LTV controls the verdict.
 

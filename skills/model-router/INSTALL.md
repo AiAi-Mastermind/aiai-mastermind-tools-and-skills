@@ -3,7 +3,7 @@
 **Audience: the AI agent (Claude Code) doing the install.** If you are a human,
 just tell your Claude Code session:
 
-> Clone https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills and follow
+> Clone https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills and follow
 > skills/model-router/INSTALL.md to set up FabSol.
 
 ## What you are installing

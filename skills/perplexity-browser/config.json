@@ -1,0 +1,5 @@
+{
+  "_note": "Optional. Only used by perplexity-ask --where project. Create a Perplexity project for agent research (turn off personal memory and connectors in it, and give it instructions to answer anonymously from sources), then paste its URL below. Leave project_url empty to use Incognito only (the default).",
+  "project_name": "Agent Research",
+  "project_url": ""
+}

@@ -31,9 +31,9 @@ Choose the leading issue and recommend one move only.
 
 | Category | Workshop examples |
 |---|---|
-| Existing customers | State Farm login; pay bill; claims; app download; policy number |
+| Existing customers | carrier login; pay bill; claims; app download; policy number |
 | Competitor brands | Geico quote; Progressive insurance; Allstate near me; USAA auto |
-| Job seekers | State Farm careers; hiring; how to become an agent; employment |
+| Job seekers | carrier careers; hiring; how to become an agent; employment |
 | Wrong products | pet insurance; Medicare; commercial trucking; SR-22; salvage title |
 | Low intent / research | reviews; ratings; Wikipedia; Reddit; complaints; BBB |
 | Service/support | roadside assistance; tow truck; customer service |
@@ -95,9 +95,9 @@ Quality Score **8+** is a supporting target in the CEO grid. It can explain auct
 
 ### Match types
 
-- **Exact:** `[State Farm auto insurance quote]` — tightest filter, highest intent, lowest volume.
-- **Phrase:** `"State Farm auto insurance quote"` — medium filter; includes the phrase's meaning.
-- **Broad:** `State Farm auto insurance quote` — widest reach, highest noise.
+- **Exact:** `[[brand] auto insurance quote]` — tightest filter, highest intent, lowest volume.
+- **Phrase:** `"[brand] auto insurance quote"` — medium filter; includes the phrase's meaning.
+- **Broad:** `[brand] auto insurance quote` — widest reach, highest noise.
 
 Google may make close variations even on Exact. Do not promise literal-only matching.
 

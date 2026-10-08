@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+"""Ask Grok (grok.com, Private Chat) a question in Agent Chrome and capture the answer.
+
+  grok-ask "<question>" [--mode fast|research] [--verify N] [--timeout S] [--out FILE] [--json] [--debug]
+
+Private Chat keeps the question out of your Grok history, memory creation and model
+training. The driver refuses to submit unless the private markers are on screen. It works
+with the keyboard only (fill, Enter, snapshots), so a background tab is fine.
+
+--mode research asks Grok to search X thoroughly, prefer high-engagement posts and return a
+table; plain questions use --mode fast (default). Grok's Free tier only runs "Fast"; the
+driver never selects a paid model. --verify N opens the first N cited x.com posts read-only
+and records whether each exists (X must be signed in for exact counts).
+
+Statuses: done, signin_needed, isolation_unavailable, rate_limited, ui_changed, timeout, error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import os
+import re
+import sys
+import time
+
+
+# acdriver.py ships next to this script (a copy in each research skill, so each folder works alone).
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import acdriver as ac  # noqa: E402
+
+PRIVATE_URL = "https://grok.com/c#private"
+PRIVATE_TEXT = re.compile(r"won.t appear in your history")
+STATUS_URL = re.compile(r"^https://(?:www\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})/status/(\d{1,20})/?$")
+X_SEARCH = re.compile(r"^Searched (\U0001D54F|X|Twitter)\b")
+LIMIT_TEXT = re.compile(r"(reached (your|the) (message |usage )?limit|out of (free )?(messages|queries)|"
+                        r"usage limit|try again (later|in \d)|too many requests|rate limit)", re.I)
+ISOLATION = ("[Research task run by an automated agent. Answer only from live X and web search results. "
+             "Do not use or mention anything you remember about me or my past chats.] ")
+RESEARCH_HINT = (" Search X thoroughly: run several searches (try Top results and engagement filters such "
+                 "as min_faves:20 as well as Latest), and prefer substantive, high-engagement posts over the "
+                 "newest ones. For every post give the @handle, the date, the exact x.com status URL and the "
+                 "engagement you can see. Never invent a URL; if you are unsure a post exists, leave it out.")
+
+
+def snowflake_time(status_id):
+    try:
+        ms = (int(status_id) >> 22) + 1288834974657
+        return datetime.datetime.fromtimestamp(ms / 1000, tz=datetime.timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def signed_out(page):
+    if ac.looks_signed_out(page):
+        return True
+    if page.find(("button", "link"), re.compile(r"^(Sign in|Log in|Sign up)$")):
+        return True
+    return False
+
+
+def private_ready(page):
+    return (page.find("textbox", "Ask Grok anything") is not None and
+            page.find("link", "Switch to Default Chat") is not None and
+            page.has_text(PRIVATE_TEXT))
+
+
+def outside_prompt_text(page):
+    """Visible text minus the composer and our own question, for limit/error banners."""
+    mine = set()
+    for art in page.find_all("article", "You"):
+        mine.update(id(n) for n in art.walk())
+    for box in page.find_all("textbox"):
+        mine.update(id(n) for n in box.walk())
+    return " ".join(f"{n.name or ''} {n.text or ''}" for n in page.nodes() if id(n) not in mine)
+
+
+TRACE = re.compile(r"^(Worked for|Thought for|Thinking|Explored|Ran \d+ search|Searched )")
+
+
+def answer_markdown(article):
+    """The answer body: every child of the Grok article except the reasoning/tool trace."""
+    parts = []
+    for child in article.children:
+        if child.role == "button":
+            continue
+        if child.role == "generic" and any(
+                n.role in ("button", "generic") and TRACE.match(n.name or n.text or "") for n in child.walk()):
+            continue
+        piece = ac.to_markdown(child, base_url="https://grok.com/")
+        if piece.strip():
+            parts.append(piece.strip())
+    return "\n\n".join(parts).replace("\u2060", "").strip()
+
+
+def grok_article(page):
+    arts = page.find_all("article", "Grok")
+    return arts[-1] if arts else None
+
+
+def run(question, mode, timeout, verify, debug):
+    started = time.time()
+    result = {"lane": "grok", "mode": mode, "isolation": "grok-private-chat", "status": "error"}
+    prompt = ISOLATION + question.strip() + (RESEARCH_HINT if mode == "research" else "")
+    with ac.Session("grok", debug=debug) as s:
+        s.open(PRIVATE_URL)
+        page = None
+        for _ in range(12):
+            time.sleep(2)
+            page = s.snapshot()
+            if private_ready(page) or signed_out(page):
+                break
+        if signed_out(page):
+            result.update(status="signin_needed", message="grok.com is signed out in Agent Chrome")
+            return result
+        if not page.find("button", re.compile(r"^pfp ")):
+            s.log("no account button seen; continuing only if private markers are present")
+        if not private_ready(page):
+            result.update(status="isolation_unavailable",
+                          message="Private Chat markers not found; refusing to ask in a normal chat")
+            return result
+        box = page.find("textbox", "Ask Grok anything")
+        s.fill(box, prompt)
+        time.sleep(1)
+        page = s.snapshot()
+        model = page.find("button", "Model select")
+        label = " ".join((n.text or "") for n in model.walk()).strip() if model else ""
+        if label:
+            result["model"] = label
+        submit = page.find("button", "Submit")
+        if submit is None or submit.attrs.get("disabled"):
+            result.update(status="ui_changed", message="Submit did not enable after filling the question")
+            return result
+        if not private_ready(page):
+            result.update(status="isolation_unavailable", message="Private Chat turned off before submit")
+            return result
+        if not ac.composer_ready(page, page.find("textbox", "Ask Grok anything"), ISOLATION):
+            result.update(status="ui_changed", message="the question box lost focus before submit; not sent")
+            return result
+        s.press("Enter")
+        s.log("submitted")
+
+        seen_running = [False]
+        limit_hits = [0]
+        cards = []  # tool cards ("Searched 𝕏 for …") are visible while Grok works, collapsed after
+        submitted_at = time.time()
+        last = [None]
+
+        def done(p):
+            running = p.find("button", "Stop model response") is not None
+            article = grok_article(p)
+            for n in p.find_all("button", re.compile(r"^(Searched |Ran \d+ search)")):
+                if n.name not in cards:
+                    cards.append(n.name)
+            if running or article is not None:
+                seen_running[0] = True
+            if not running and article is None and time.time() - submitted_at > 5:
+                limit_hits[0] = limit_hits[0] + 1 if LIMIT_TEXT.search(ac.banner_text(p)) else 0
+                if limit_hits[0] >= 2:
+                    return "rate_limited"
+            if running or not seen_running[0] or article is None:
+                return None
+            if not (p.find("button", "Copy response") or p.find("button", "Regenerate")):
+                return None
+            text = answer_markdown(article)
+            # Finished only when the answer has text and is unchanged across two polls.
+            stable = bool(text) and text == last[0]
+            last[0] = text
+            return "done" if stable else None
+
+        page, verdict = s.wait(done, timeout, interval=3, on_tick=lambda p: s.log("running"))
+        if verdict is None:
+            result.update(status="timeout", message=f"no finished answer after {timeout}s")
+            return result
+        if verdict == "rate_limited":
+            result.update(status="rate_limited", message="Grok reports a usage limit")
+            return result
+        article = grok_article(page)
+        if article is None:
+            result.update(status="ui_changed", message="finished but no Grok answer article found")
+            return result
+        for n in page.find_all("button", re.compile(r"^(Searched |Ran \d+ search)"), within=article):
+            if n.name not in cards:
+                cards.append(n.name)
+        result["x_searches"] = [c for c in cards if X_SEARCH.match(c)]
+        result["other_searches"] = [c for c in cards if not X_SEARCH.match(c)]
+        result["answer_markdown"] = answer_markdown(article)
+        sources, by_id = [], {}
+        for link in ac.links_in(article):
+            m = STATUS_URL.match(link["url"].split("?")[0].split("#")[0])
+            if m:
+                # Store only a rebuilt canonical URL: never a path taken verbatim from the answer.
+                handle, sid = m.group(1), m.group(2)
+                url = f"https://x.com/{handle}/status/{sid}"
+                if sid in by_id:
+                    if by_id[sid]["title"] == "@i" and handle != "i":  # prefer the handle form
+                        by_id[sid].update(title="@" + handle, url=url)
+                    continue
+                when = snowflake_time(sid)
+                by_id[sid] = {"title": "@" + handle, "url": url,
+                              "posted_utc": when.isoformat(timespec="seconds") if when else None}
+                sources.append(by_id[sid])
+            elif link["url"].startswith("http") and "grok.com" not in link["url"]:
+                sources.append({"title": link["title"], "url": link["url"]})
+        result["sources"] = sources
+        result["page_title"] = page.title
+        result["status"] = "done"
+        x_cited = [x for x in sources if STATUS_URL.match(x["url"])]
+        if not result["x_searches"] and mode == "research":
+            result["warning"] = ("no 'Searched X' card was seen; the cited x.com posts suggest X search ran"
+                                 if x_cited else "no X search and no x.com posts cited: not live X research")
+
+    if verify and result["status"] == "done":
+        result["verified"] = verify_posts([x["url"] for x in result["sources"] if STATUS_URL.match(x["url"])][:verify],
+                                          debug)
+        unconfirmed = [v["url"] for v in result["verified"] if v.get("state") != "exists"]
+        if unconfirmed:
+            result["unconfirmed_posts"] = unconfirmed
+    result["elapsed_s"] = round(time.time() - started)
+    return result
+
+
+def verify_posts(urls, debug):
+    """Open each cited post read-only; record exists / missing / signin_needed / unknown / error."""
+    checks = []
+    for url in urls:
+        row = {"url": url}
+        m = STATUS_URL.match(url)
+        if not m:
+            row["state"] = "error"
+            row["message"] = "not a canonical x.com status URL"
+            checks.append(row)
+            continue
+        sid = m.group(2)
+        try:
+            with ac.Session("grokv", debug=debug) as s:
+                s.open(url)
+                time.sleep(4)
+                page = s.snapshot()
+                if ac.looks_signed_out(page):
+                    row["state"] = "signin_needed"
+                elif page.has_text(re.compile(r"(this (post|page) (doesn.t exist|is unavailable)|"
+                                              r"Hmm\.\.\.this page|post was deleted)", re.I)):
+                    row["state"] = "missing"
+                else:
+                    # Positive proof only: the post's own article with a timestamp, or a link to this status.
+                    own = any(n.role == "link" and n.url and f"/status/{sid}" in n.url for n in page.nodes())
+                    stamp = page.find("time")
+                    if own or (stamp is not None and page.find("article")):
+                        likes = page.find("button", re.compile(r"^\d[\d,.KkMm]* Likes?\. Like"))
+                        row["state"] = "exists"
+                        row["likes"] = likes.name.split(" ")[0] if likes else None
+                        row["time"] = (stamp.name or stamp.text) if stamp else None
+                    else:
+                        row["state"] = "unknown"
+        except ac.DriverError as exc:
+            row["state"] = "error"
+            row["message"] = str(exc)
+        checks.append(row)
+        time.sleep(2)
+    return checks
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("question")
+    parser.add_argument("--mode", choices=("fast", "research"), default="fast")
+    parser.add_argument("--timeout", type=int, default=240)
+    parser.add_argument("--verify", type=int, default=0)
+    parser.add_argument("--out")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+    try:
+        result = run(args.question, args.mode, args.timeout, args.verify, args.debug)
+    except ac.DriverError as exc:
+        result = {"lane": "grok", "status": exc.status, "message": str(exc)}
+    except ac.Stopped as exc:
+        result = {"lane": "grok", "status": "timeout", "message": str(exc)}
+    except Exception as exc:  # never die without a JSON status
+        result = {"lane": "grok", "status": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}
+    if result.get("status") == "done":
+        result["file"] = ac.write_result("grok", args.question, result, args.out)
+    return ac.emit(result, args.json)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

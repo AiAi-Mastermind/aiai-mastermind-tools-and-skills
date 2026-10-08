@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""Ask Perplexity (your own Perplexity subscription) in Agent Chrome and capture the answer + sources.
+
+  perplexity-ask "<question>" [--mode search|research] [--where incognito|project]
+                 [--timeout S] [--out FILE] [--json] [--debug]
+
+Isolation (tested 2026-09-29 with a canary question):
+  * Incognito turns off Perplexity memory and search history, and the thread is never saved.
+  * Neither Incognito nor a project hides the account's Personalization profile (custom
+    instructions): the model still sees it. So every question also carries NEUTRAL_PREFACE,
+    which made the canary answer "NONE".
+  * --where project runs inside the "Agent Research" project instead (personal memory, Brain and
+    connectors off, anonymous-researcher instructions) when the thread should be kept.
+The driver refuses to submit if Incognito is not confirmed on (incognito mode).
+
+Keyboard-only where it matters (Cmd+; for Incognito, "/deep" or "/search" for the mode, Enter to
+submit), so it works while the tab sits behind other tabs. Long runs are polled by reopening the
+thread URL in a fresh tab, because a background tab stops rendering the stream.
+
+Statuses: done, signin_needed, isolation_unavailable, rate_limited, ui_changed, timeout, error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+
+
+# acdriver.py ships next to this script (a copy in each research skill, so each folder works alone).
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import acdriver as ac  # noqa: E402
+
+HOME = "https://www.perplexity.ai/"
+CONFIG = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "config.json")
+# Keep in step with the copy quoted in perplexity-browser/SKILL.md ("Drive it yourself").
+NEUTRAL_PREFACE = ("[Neutral research mode: treat me as an anonymous user. Do not use, mention or tailor the "
+                   "answer to any profile, custom instructions, memory, location or personal details you may "
+                   "have about me.] ")
+THREAD = re.compile(r"^https://www\.perplexity\.ai/search/[A-Za-z0-9._-]+")
+LIMIT = re.compile(r"(reached (your|the) (daily |weekly |monthly )?limit|out of (pro|research) (searches|queries)|"
+                   r"limit reached|no .{0,20}(searches|queries) left|upgrade to (max|pro) to continue|"
+                   r"too many requests|try again later)", re.I)
+
+
+def config():
+    try:
+        with open(CONFIG) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def signed_out(page):
+    if ac.looks_signed_out(page):
+        return True
+    if page.find(("button", "link"), re.compile(r"^(Sign in|Log in|Sign up|Sign In)$")):
+        return True
+    return False
+
+
+def composer(page):
+    """The ask box: unnamed (or 'Ask anything'/'Ask a follow-up'), never one inside a dialog.
+    If several qualify, only the focused one; if that is ambiguous, none."""
+    boxes = [b for b in page.find_all("textbox")
+             if (not b.name or b.name in ("Ask anything", "Ask a follow-up"))
+             and not any(a.role in ("dialog", "alertdialog") for a in b.ancestors())]
+    if len(boxes) > 1:
+        focused = [b for b in boxes if b.attrs.get("active")]
+        if focused:
+            boxes = focused
+        else:  # focus not reported: fall back to the single ask box inside main
+            boxes = [b for b in boxes if any(a.role == "main" for a in b.ancestors())]
+    return boxes[0] if len(boxes) == 1 else None
+
+
+MODES = ("Deep research", "Search", "Computer", "Learn step by step")
+
+
+def pressed_mode(page):
+    """The single pressed mode button, or None when zero or several are pressed."""
+    on = {n.name for n in page.find_all("button") if n.attrs.get("pressed") and n.name in MODES}
+    return on.pop() if len(on) == 1 else None
+
+
+def computer_on(page):
+    return any(n.attrs.get("pressed") for n in page.find_all("button", re.compile(r"^Computer\b")))
+
+
+def running(page):
+    return page.find("button", re.compile(r"^Stop( response)?")) is not None
+
+
+def answer_nodes(page):
+    """Blocks between the query paragraph and the answer's Copy row."""
+    main = page.find("main") or (page.roots[0] if page.roots else None)
+    if main is None:
+        return None
+    order = list(main.walk())
+    anchor = page.find("button", "Copy query", within=main)
+    if anchor is None:
+        return None
+    start = next((n for n in order[order.index(anchor):] if n.role == "paragraph"), None)
+    if start is None:
+        return None
+    end = next((n for n in order[order.index(start):] if n.role == "button" and n.name == "Copy"), None)
+    if end is None:
+        return None
+    return main, ac.between(main, start, end)
+
+
+def answer_markdown(page):
+    cut = answer_nodes(page)
+    if not cut:
+        return ""
+    _, blocks = cut
+    parts = [ac.to_markdown(b, base_url=HOME) for b in blocks]
+    text = "\n\n".join(p.strip() for p in parts if p and p.strip())
+    text = re.sub(r"\[Trusted domain\s+([^\]]+)\]", r"[\1]", text)
+    return re.sub(r"^Researched( \d+[sm])?\s*$", "", text, flags=re.M).strip()
+
+
+def banner_text(page):
+    """Alert/status/dialog text only, never our own question, the sidebar or old thread titles."""
+    mine = set()
+    anchor = page.find("button", "Copy query")
+    if anchor is not None:
+        order = list(page.nodes())
+        query = next((n for n in order[order.index(anchor):] if n.role == "paragraph"), None)
+        if query is not None:
+            mine.update(id(n) for n in query.walk())
+    return ac.banner_text(page, mine)
+
+
+def finished(page):
+    return (not running(page) and page.find("button", "Copy") is not None and bool(answer_markdown(page)))
+
+
+def ensure_incognito(s, page):
+    if page.find("button", "Exit incognito"):
+        return page
+    if not page.find("button", re.compile(r"^Use incognito")):
+        raise ac.DriverError("isolation_unavailable", "no Incognito control on the page")
+    box = composer(page)
+    if box is None:
+        raise ac.DriverError("ui_changed", "composer not found")
+    s.fill(box, "")
+    s.press("Meta+;")  # Perplexity's Incognito shortcut; works in a background tab
+    time.sleep(1.5)
+    page = s.snapshot()
+    if not page.find("button", "Exit incognito"):
+        raise ac.DriverError("isolation_unavailable", "could not switch Incognito on")
+    return page
+
+
+def set_mode(s, page, mode):
+    want = "Deep research" if mode == "research" else "Search"
+    if pressed_mode(page) == want:
+        return page
+    box = composer(page)
+    s.fill(box, "/deep" if mode == "research" else "/sea")
+    time.sleep(1.3)
+    page = s.snapshot()
+    if not page.find("menuitem", want):
+        s.press("Escape")
+        s.fill(composer(s.snapshot()), "")
+        raise ac.DriverError("ui_changed", f"'{want}' is not offered in the / menu")
+    s.press("Enter")
+    time.sleep(1.2)
+    page = s.snapshot()
+    if pressed_mode(page) != want:
+        raise ac.DriverError("ui_changed", f"mode did not switch to {want}")
+    return page
+
+
+def collect_sources(s, page):
+    """Full source list from the Links tab (needs a click; fresh tabs are usually in front)."""
+    tab = page.find("tab", "Links")
+    if tab is not None:
+        try:
+            s.click(tab)
+            time.sleep(2)
+            panel = s.snapshot().find("tabpanel")
+            if panel is not None:
+                links, seen = [], set()
+                for node in panel.walk():
+                    if node.role != "link" or not node.url or "perplexity.ai" in node.url:
+                        continue
+                    url = ac.clean_url(node.url)
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    texts = [n.text for n in node.walk() if n.text]
+                    at = next((i for i, t in enumerate(texts) if t.startswith("http")), -1)
+                    title = texts[at + 1] if 0 <= at < len(texts) - 1 else (texts[0] if texts else url)
+                    snippet = texts[at + 2] if 0 <= at < len(texts) - 2 else None
+                    row = {"title": title.strip(), "url": url}
+                    if snippet:
+                        row["snippet"] = snippet.strip()[:240]
+                    links.append(row)
+                if links:
+                    return links, "links-tab"
+        except ac.DriverError:
+            pass
+    cut = answer_nodes(page)
+    links, seen = [], set()
+    for block in (cut[1] if cut else []):
+        for link in ac.links_in(block):
+            if link["url"].startswith("http") and "perplexity.ai" not in link["url"] and link["url"] not in seen:
+                seen.add(link["url"])
+                links.append(link)
+    for link in links:
+        link["title"] = re.sub(r"^Trusted domain\s*", "", link["title"])
+    return links, "inline-citations"
+
+
+def run(question, mode, where, timeout, debug):
+    started = time.time()
+    cfg = config()
+    result = {"lane": "perplexity", "mode": "deep-research" if mode == "research" else "search",
+              "status": "error"}
+    if where == "project":
+        url = cfg.get("project_url")
+        if not url:
+            raise ac.DriverError("error", "no project_url in perplexity-browser/config.json")
+        result["isolation"] = "project:" + cfg.get("project_name", "Agent Research") + "+neutral-preface"
+    else:
+        url = HOME
+        result["isolation"] = "incognito+neutral-preface"
+    prompt = NEUTRAL_PREFACE + question.strip()
+
+    with ac.Session("pplx", debug=debug) as s:
+        s.open(url)
+        page = None
+        for _ in range(10):
+            time.sleep(2)
+            page = s.snapshot()
+            if composer(page) is not None or signed_out(page):
+                break
+        if signed_out(page):
+            result.update(status="signin_needed", message="perplexity.ai is signed out in Agent Chrome")
+            return result
+        if composer(page) is None:
+            result.update(status="ui_changed", message="composer textbox not found")
+            return result
+        # Incognito and the mode are browser-wide sticky state: hold a machine-wide lock from checking
+        # them until the question is submitted, so two runs can't flip Incognito under each other.
+        with ac.site_lock("perplexity-submit", timeout=300):
+            page = s.snapshot()
+            if where == "incognito":
+                page = ensure_incognito(s, page)
+            else:
+                # Refuse unless we really are inside the configured project (not redirected home).
+                in_project = page.url.split("?")[0].rstrip("/") == url.rstrip("/") and \
+                    page.find("tab", "Settings") is not None and page.find("tablist", "Project tabs") is not None
+                if not in_project:
+                    raise ac.DriverError("isolation_unavailable",
+                                         "did not land in the configured project; refusing to run in a normal thread")
+            page = set_mode(s, page, mode)
+            if computer_on(page):
+                raise ac.DriverError("ui_changed", "Computer mode is selected; refusing to run a Computer task")
+            s.fill(composer(page), prompt)
+            time.sleep(0.8)
+            page = s.snapshot()
+            if where == "incognito" and not page.find("button", "Exit incognito"):
+                raise ac.DriverError("isolation_unavailable", "Incognito turned off before submit")
+            if pressed_mode(page) != ("Deep research" if mode == "research" else "Search") or computer_on(page):
+                raise ac.DriverError("ui_changed", "mode changed after filling the question")
+            if not ac.composer_ready(page, composer(page), NEUTRAL_PREFACE):
+                raise ac.DriverError("ui_changed", "the ask box lost focus before submit; not sent")
+            if where == "incognito":
+                result["incognito_confirmed_before_submit"] = True
+            s.press("Enter")
+            s.log("submitted")
+            time.sleep(2)  # let the thread start before another run may touch the toggle
+
+        thread, deadline, seen_running, failures = None, started + timeout, False, 0
+        # Phase 1: watch the live tab briefly (Search answers finish in seconds).
+        live_until = time.time() + (40 if mode == "search" else 25)
+        polls = 0
+        while time.time() < live_until:
+            time.sleep(3)
+            page = s.snapshot()
+            polls += 1
+            seen_running = seen_running or running(page)
+            if THREAD.match(page.url):
+                thread = THREAD.match(page.url).group(0)
+            if finished(page):
+                break
+            # A usage-limit banner counts only outside our own question, and not on the first poll.
+            if polls >= 2 and not running(page) and not answer_markdown(page) and LIMIT.search(banner_text(page)):
+                result.update(status="rate_limited", message="Perplexity reports a usage limit", thread_url=thread)
+                return result
+        # Phase 2: reopen the thread in a fresh tab until it is finished (a background tab stops
+        # rendering). One failed reopen is not fatal; five in a row are.
+        while not finished(page):
+            if time.time() >= deadline:
+                result.update(status="timeout", message=f"not finished after {timeout}s", thread_url=thread)
+                return result
+            if not thread:
+                result.update(status="ui_changed", message="no thread URL to poll")
+                return result
+            time.sleep(15)
+            try:
+                if s.opened:
+                    s.opened = False  # one close attempt per tab, never a retry
+                    s.pw("tab-close", check=False)
+                s.open(thread)
+                time.sleep(5)
+                page = s.snapshot()
+                failures = 0
+                s.log("polled: " + ("running" if running(page) else "not running"))
+            except ac.DriverError as exc:
+                failures += 1
+                s.log(f"poll failed ({failures}): {exc}")
+                if failures >= 5:
+                    result.update(status="error", message=f"lost the thread tab: {exc}", thread_url=thread)
+                    return result
+        result["thread_url"] = thread or (page.url if THREAD.match(page.url) else None)
+        result["answer_markdown"] = answer_markdown(page)
+        count = page.find("button", re.compile(r"^\d+ sources?$"))
+        result["source_count"] = int(count.name.split()[0]) if count else None
+        result["sources"], result["sources_from"] = collect_sources(s, page)
+        if where == "incognito":
+            # The thread page shows the Exit incognito control above the follow-up box.
+            result["incognito_on_thread"] = page.find("button", "Exit incognito") is not None
+        result["status"] = "done"
+    result["elapsed_s"] = round(time.time() - started)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("question")
+    parser.add_argument("--mode", choices=("search", "research"), default="search")
+    parser.add_argument("--where", choices=("incognito", "project"), default="incognito")
+    parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--out")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+    try:
+        result = run(args.question, args.mode, args.where, args.timeout, args.debug)
+    except ac.DriverError as exc:
+        result = {"lane": "perplexity", "status": exc.status, "message": str(exc)}
+    except ac.Stopped as exc:
+        result = {"lane": "perplexity", "status": "timeout", "message": str(exc)}
+    except Exception as exc:  # never die without a JSON status
+        result = {"lane": "perplexity", "status": "error", "message": f"{type(exc).__name__}: {exc}"[:300]}
+    if result.get("status") == "done":
+        result["file"] = ac.write_result("perplexity", args.question, result, args.out)
+    return ac.emit(result, args.json)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

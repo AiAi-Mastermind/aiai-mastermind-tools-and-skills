@@ -68,7 +68,7 @@ Web-first: this one is designed for **claude.ai** — upload [`gam-campaign-chec
 **Tip:** You can grab a single skill folder instead of cloning the whole repository:
 
 ```bash
-curl -L https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills/archive/refs/heads/main.tar.gz | tar -xz --strip-components=2 '*/skills/generate-me'
+curl -L https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills/archive/refs/heads/main.tar.gz | tar -xz --strip-components=2 '*/skills/generate-me'
 ```
 
 Swap the skill name at the end of that command to grab any skill in this repository.
@@ -76,7 +76,7 @@ Swap the skill name at the end of that command to grab any skill in this reposit
 **Claude Code** (personal skills):
 
 ```bash
-git clone https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills.git
+git clone https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills.git
 
 # wiki-llm
 cp -R aiai-mastermind-tools-and-skills/skills/wiki-llm ~/.claude/skills/wiki-llm
@@ -99,10 +99,77 @@ Then just ask: *"build a wiki LLM from these PDFs"* or *"generate a hero image o
 **model-router** is a full setup, not a copy-paste skill — paste this into Claude Code and it does the rest (one browser sign-in needed):
 
 ```
-Clone https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills and follow
+Clone https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills and follow
 skills/model-router/INSTALL.md to set up FabSol. Do every step yourself, and tell
 me when you need me to approve the browser sign-in.
 ```
+
+## Browser research skills (Mac only)
+
+Five skills that let Claude Code or Codex do research with the consumer subscriptions you already pay for, instead of paid APIs. Each one drives a real website inside **Agent Chrome**, a separate signed-in browser just for your agents, and returns cited, dated results your agent can use.
+
+| Skill | What it does |
+|---|---|
+| [`perplexity-browser`](skills/perplexity-browser) | Perplexity Search or Deep research, always in Incognito with a neutral preface so your personal profile doesn't shape the answer |
+| [`grok-browser`](skills/grok-browser) | What people are saying on X (Twitter), through Grok in Private Chat, with each post's link and date checked |
+| [`muse-browser`](skills/muse-browser) | **Experimental.** Facebook groups and Instagram trends, by asking Meta's own AI agent Muse in a fresh side chat |
+| [`facebook-personal-browser`](skills/facebook-personal-browser) | Reads a few specific Facebook posts on your own account, strictly read-only and slowly |
+| [`last30days-plus`](skills/last30days-plus) | Runs the open-source [last30days](https://github.com/mvanhorn/last30days-skill) research skill and adds the X, web and Facebook/Instagram lanes above |
+
+Safety rules built into every one of them:
+- Research questions only. Never client names, customer or policy data, or private files.
+- Isolation first: Perplexity runs only in Incognito, Grok only in Private Chat, Muse only in a fresh side chat. If the driver can't prove isolation, it sends nothing.
+- Agents never type passwords or solve sign-in, code or captcha screens. They stop and ask you.
+- Facebook is read-only and paced. Any checkpoint screen stops all Facebook work for the day.
+- Everything a site returns is treated as untrusted content, never as instructions.
+- Personal volume only: one research job at a time, a handful a day, no loops. These are consumer subscriptions with their own terms.
+
+Known limits: `muse-browser` is experimental (its side-chat isolation check failed in testing on 2026-10-07, so it may refuse to run until updated). Perplexity changes its Deep research toggle often; if a Deep research run returns `ui_changed` or only a few sources, follow the "Drive it yourself" steps in `perplexity-browser`.
+
+### What you need
+
+- A Mac. These skills do not work on Windows or Linux.
+- The **[aiai-agent-chrome](https://github.com/AiAi-Mastermind/aiai-agent-chrome)** kit, installed and running (`~/.local/share/agent-chrome/bin/agent-chrome doctor` passes).
+- Your own accounts, signed in inside the Agent Chrome window: Perplexity (a plan with Deep research for the web lane), Grok (free works) and, for the Meta lanes, Facebook and muse.ai.
+- For `last30days-plus`: the upstream last30days skill from https://github.com/mvanhorn/last30days-skill, installed by following that repo's instructions.
+
+### Install for Claude Code
+
+```bash
+git clone https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills.git
+cd aiai-mastermind-tools-and-skills/skills
+for s in perplexity-browser grok-browser muse-browser facebook-personal-browser last30days-plus; do
+  cp -R "$s" ~/.claude/skills/"$s"
+  chmod +x ~/.claude/skills/"$s"/bin/*
+done
+```
+
+Then ask in plain words, for example *"Use Perplexity deep research on ..."* or *"Run last30days-plus on ..."*.
+
+### Install for Codex
+
+Copy the same folders into `~/.codex/skills/` (or `~/.agents/skills/`):
+
+```bash
+for s in perplexity-browser grok-browser muse-browser facebook-personal-browser last30days-plus; do
+  mkdir -p ~/.codex/skills && cp -R "$s" ~/.codex/skills/"$s"
+  chmod +x ~/.codex/skills/"$s"/bin/*
+done
+```
+
+Start Codex with the browser profile the kit created (`codex -p browser`) so it can reach Agent Chrome. The drivers save a private copy of each answer under `~/Library/Application Support/BrowserResearch/runs/`. If Codex's sandbox blocks that folder, add it to the profile's `writable_roots`, or set `BROWSER_RESEARCH_DIR` to a folder Codex can write to.
+
+### Example last30days-plus prompts for insurance agency owners
+
+1. "Run last30days-plus on what homeowners are saying about rising home insurance premiums and non-renewals in California."
+2. "last30days-plus with X and Facebook: how are independent and captive insurance agents using AI assistants for quoting and follow-up?"
+3. "Use last30days-plus to find what small business owners are asking about commercial auto insurance costs this month."
+4. "What are people saying in the last 30 days about life insurance for young families? Use last30days-plus and pull the questions they keep asking."
+5. "Run last30days-plus on hurricane and wildfire season claims experiences, focused on what frustrated policyholders most."
+6. "last30days-plus: what video and Reel formats are insurance agents posting on Instagram and Facebook that get the most engagement?"
+7. "Run last30days-plus on how renters are talking about renters insurance, and list the five objections that come up most."
+
+Your agent sends only the topic to each site. Keep prompts about public topics, never about a specific client.
 
 ## License
 
@@ -119,7 +186,7 @@ Includes: MAYA's standing instructions (CLAUDE.md), a fill-in-the-blanks job des
 Setup (covered step by step in the course):
 
 ```bash
-git clone https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills.git
+git clone https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills.git
 cp -R aiai-mastermind-tools-and-skills/maya-starter ~/Documents/your-agency-content-team
 ```
 

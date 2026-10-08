@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""Run the subscription browser lanes for one research topic, in parallel, on Agent Chrome.
+
+  research-lanes "<topic>" [--days 30] [--lanes x,web,meta] [--out DIR] [--json]
+
+Lanes (each one is a site driver from its own skill):
+  x     grok-browser/bin/grok-ask             Grok private chat, searches X
+  web   perplexity-browser/bin/perplexity-ask Perplexity Research mode, incognito
+  meta  muse-browser/bin/muse-ask             Meta's Muse (muse.ai), Facebook + Instagram
+
+Each lane writes one markdown evidence file into the run folder and the runner prints a
+manifest (JSON with --json). A lane that is signed out, rate limited or changed its UI reports
+that status and the others still finish. Nothing here reads cookies or types credentials.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+
+SKILL_ROOTS = ("~/.claude/skills", "~/.codex/skills", "~/.agents/skills")
+
+
+def find_driver(skill, name):
+    for root in SKILL_ROOTS:
+        path = os.path.join(os.path.expanduser(root), skill, "bin", name)
+        if os.path.isfile(path):
+            return path
+    # Fall back to the canonical repo copy next to this skill.
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+    path = os.path.join(here, skill, "bin", name)
+    return path if os.path.isfile(path) else None
+
+
+def prompts(topic, days):
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=days)
+    window = f"between {start:%B %-d, %Y} and {end:%B %-d, %Y} (the last {days} days)"
+    return {
+        "x": ("grok-browser", "grok-ask", ["--mode", "research", "--verify", "3"],
+              f"Search X (Twitter) for what people are saying about \"{topic}\" {window}. "
+              f"Find the 10 to 15 most-engaged or most substantive posts. For each give the author @handle, "
+              f"the post date (YYYY-MM-DD), the exact x.com status URL, likes, reposts and replies if shown, "
+              f"and a one-line summary of the claim. Put them in a markdown table. Then list 3 to 5 themes, "
+              f"which posts support each, and any notable disagreement. Include only posts you actually "
+              f"retrieved; mark any URL you could not confirm as unverified."),
+        "web": ("perplexity-browser", "perplexity-ask", ["--mode", "research"],
+                f"What happened, and what are people saying, about \"{topic}\" {window}? Cover news, official "
+                f"announcements, expert commentary and community discussion (Reddit, Hacker News, blogs, "
+                f"YouTube). Prefer sources published inside that window and give every claim a dated "
+                f"citation. End with a short dated timeline of key developments, the consensus view, the main "
+                f"disagreements, and open questions."),
+        "meta": ("muse-browser", "muse-ask", [],
+                 f"What are people on Instagram and Facebook, including Facebook groups, saying about \"{topic}\" "
+                 f"{window}? Find the most useful public posts, Reels, creators and group discussions, describe "
+                 f"the dominant sentiment and themes, and point out anything that went viral with its "
+                 f"approximate engagement."),
+    }
+
+
+LOCK = threading.Lock()
+
+
+def write_manifest(out_dir, manifest):
+    path = os.path.join(out_dir, "manifest.json")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(manifest, fh, indent=2)
+
+
+def run_lane(key, spec, out_dir, timeout, results, manifest):
+    skill, driver_name, extra, prompt = spec
+    started = time.time()
+    driver = find_driver(skill, driver_name)
+    if not driver:
+        data = {"status": "not_installed", "message": f"{skill}/{driver_name} not found"}
+    else:
+        out_file = os.path.join(out_dir, f"{key}-{skill}.md")
+        cmd = [driver, prompt, "--json", "--out", out_file, "--timeout", str(timeout)] + extra
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            out, err = proc.communicate(timeout=timeout + 240)
+        except subprocess.TimeoutExpired:
+            # SIGTERM first: the driver turns it into an exception and closes its Agent Chrome tab.
+            proc.terminate()
+            try:
+                out, err = proc.communicate(timeout=45)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+        try:
+            data = json.loads((out.strip().splitlines() or ["{}"])[-1])
+        except ValueError:
+            data = {}
+        if not data.get("status"):
+            tail = (err or "").strip().splitlines()[-1:] or ["driver printed no JSON result"]
+            data = {"status": "error", "message": tail[0][:300]}
+    data.pop("answer_markdown", None)
+    data.update(lane=key, skill=skill, elapsed_s=round(time.time() - started))
+    with LOCK:
+        results[key] = data
+        manifest["lanes"] = [results.get(k, {"lane": k, "status": "running"}) for k in manifest["order"]]
+        write_manifest(out_dir, manifest)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("topic")
+    parser.add_argument("--days", type=int, default=30)
+    parser.add_argument("--lanes", default="x,web")  # meta (Muse) is experimental: opt in
+    parser.add_argument("--out")
+    parser.add_argument("--timeout", type=int, default=780,
+                        help="per-lane driver timeout in seconds (Deep research usually 1-5 min); a lane is "
+                             "stopped cleanly at most ~5 min after this")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    specs = prompts(args.topic, args.days)
+    lanes = [l.strip() for l in args.lanes.split(",") if l.strip()]
+    bad = [l for l in lanes if l not in specs]
+    if bad:
+        print(f"unknown lane(s) {bad}; choose from {sorted(specs)}", file=sys.stderr)
+        return 2
+    root = os.environ.get("BROWSER_RESEARCH_DIR") or os.path.expanduser(
+        "~/Library/Application Support/BrowserResearch/runs")
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d/%H%M%S")
+    slug = re.sub(r"[^a-z0-9]+", "-", args.topic.lower()).strip("-")[:40] or "topic"
+    out_dir = os.path.abspath(os.path.expanduser(args.out)) if args.out else os.path.join(root, f"{stamp}-lanes-{slug}")
+    os.makedirs(out_dir, mode=0o700, exist_ok=True)
+    for folder in (out_dir, os.path.dirname(out_dir), root):
+        if os.path.isdir(folder) and os.stat(folder).st_uid == os.getuid() and folder.startswith(root):
+            os.chmod(folder, 0o700)
+    # Announce the folder at once: manifest.json there is rewritten as each lane finishes.
+    print(f"research-lanes: run folder {out_dir}", file=sys.stderr, flush=True)
+
+    results = {}
+    live = {"topic": args.topic, "days": args.days, "dir": out_dir, "order": lanes,
+            "lanes": [{"lane": k, "status": "running"} for k in lanes]}
+    write_manifest(out_dir, live)
+    threads = []
+    for i, key in enumerate(lanes):
+        t = threading.Thread(target=run_lane, args=(key, specs[key], out_dir, args.timeout, results, live))
+        t.start()
+        threads.append(t)
+        time.sleep(2 if i < len(lanes) - 1 else 0)  # stagger tab opens in the shared browser
+    for t in threads:
+        t.join()
+
+    manifest = {"topic": args.topic, "days": args.days, "dir": out_dir,
+                "lanes": [results.get(k, {"lane": k, "status": "error"}) for k in lanes]}
+    write_manifest(out_dir, manifest)
+    if args.json:
+        print(json.dumps(manifest))
+    else:
+        print(f"run folder: {out_dir}")
+        for lane in manifest["lanes"]:
+            print(f"{lane['lane']:5} {lane.get('status', '?'):14} {lane.get('elapsed_s', '')}s  "
+                  f"{lane.get('file') or lane.get('message') or ''}")
+    return 0 if any(l.get("status") == "done" for l in manifest["lanes"]) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
