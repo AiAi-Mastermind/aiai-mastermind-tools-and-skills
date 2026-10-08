@@ -4,7 +4,7 @@ Use this reference to coach a member click by click. Input may be screenshots, t
 
 ## Before opening anything
 
-Pick one evaluation period, usually the last 30 days. Write the start and end dates down. Use those exact dates in Google Ads and mySFdomain.
+Pick one evaluation period, usually the last 30 days. Write the start and end dates down. Use those exact dates in Google Ads and agency website.
 
 **Pro tip:** “The most common mistake: wrong date range. Always double-check the dates match between Google Ads and your campaign report.”
 
@@ -80,11 +80,11 @@ The screenshot should show impression share, top-of-page rate, position-above ra
 
 A list tied to zero campaigns does nothing. The screenshot must show both list names and campaign application, not merely keywords inside.
 
-## mySFdomain campaign report
+## agency website campaign report
 
-Do this **on the State Farm computer**.
+Do this **on your personal computer**.
 
-1. Go to `mysfdomain.com`.
+1. Open your agency website campaign dashboard.
 2. Select **Campaign** in the left navigation.
 3. Open **Statistics** (often the default Stats tab).
 4. Set the exact same dates used in Google Ads.
@@ -120,7 +120,7 @@ Useful fields are marketing source = Google Ads, household closed date, policies
 Use a private/incognito browser so personalization is reduced.
 
 1. Open an incognito/private window.
-2. Search a target phrase such as `State Farm auto quote [state]`.
+2. Search a target phrase such as `[brand] auto quote [state]`.
 3. Do not repeatedly click the member's ad.
 4. Record whether the ad appeared, approximate position, message shown, and competitors.
 

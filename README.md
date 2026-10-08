@@ -68,7 +68,7 @@ Web-first: this one is designed for **claude.ai** — upload [`gam-campaign-chec
 **Tip:** You can grab a single skill folder instead of cloning the whole repository:
 
 ```bash
-curl -L https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills/archive/refs/heads/main.tar.gz | tar -xz --strip-components=2 '*/skills/generate-me'
+curl -L https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills/archive/refs/heads/main.tar.gz | tar -xz --strip-components=2 '*/skills/generate-me'
 ```
 
 Swap the skill name at the end of that command to grab any skill in this repository.
@@ -76,7 +76,7 @@ Swap the skill name at the end of that command to grab any skill in this reposit
 **Claude Code** (personal skills):
 
 ```bash
-git clone https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills.git
+git clone https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills.git
 
 # wiki-llm
 cp -R aiai-mastermind-tools-and-skills/skills/wiki-llm ~/.claude/skills/wiki-llm
@@ -99,7 +99,7 @@ Then just ask: *"build a wiki LLM from these PDFs"* or *"generate a hero image o
 **model-router** is a full setup, not a copy-paste skill — paste this into Claude Code and it does the rest (one browser sign-in needed):
 
 ```
-Clone https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills and follow
+Clone https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills and follow
 skills/model-router/INSTALL.md to set up FabSol. Do every step yourself, and tell
 me when you need me to approve the browser sign-in.
 ```
@@ -186,7 +186,7 @@ Includes: MAYA's standing instructions (CLAUDE.md), a fill-in-the-blanks job des
 Setup (covered step by step in the course):
 
 ```bash
-git clone https://github.com/philgoodvibe/aiai-mastermind-tools-and-skills.git
+git clone https://github.com/AiAi-Mastermind/aiai-mastermind-tools-and-skills.git
 cp -R aiai-mastermind-tools-and-skills/maya-starter ~/Documents/your-agency-content-team
 ```
 

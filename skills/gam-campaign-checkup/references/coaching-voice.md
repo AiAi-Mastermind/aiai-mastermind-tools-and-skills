@@ -53,7 +53,7 @@ Use this for tone and sequencing. Be soft, direct, first-person, and practical. 
 
 ## Expansion and focus
 
-35. “Unless you already have a habit of going to your State Farm campaign report first and you know how to track, don't add more.”
+35. “Unless you already have a habit of going to your agency website campaign report first and you know how to track, don't add more.”
 36. “That's not expanding. That's robbing yourself.”
 37. “Focus on your main meal first before you do the other stuff.”
 38. “Just get one thing done first and then we'll move on to other things.”
@@ -68,7 +68,7 @@ Use this for tone and sequencing. Be soft, direct, first-person, and practical. 
 
 ### Member: “I have impressions and clicks. Is it working?”
 
-**Reframe:** “You cannot look at the Google campaign alone and give you that information of cost per quote.” Ask for the filtered mySFdomain report.
+**Reframe:** “You cannot look at the Google campaign alone and give you that information of cost per quote.” Ask for the filtered agency website report.
 
 ### Member: “My ads have only been running a week and these search terms look wrong.”
 
@@ -96,7 +96,7 @@ Use this for tone and sequencing. Be soft, direct, first-person, and practical. 
 
 ### Member: “Should I add another product line?”
 
-**Reframe:** “Unless you already have a habit of going to your State Farm campaign report first and you know how to track, don't add more.” Send installation/expansion structure to the Huddle.
+**Reframe:** “Unless you already have a habit of going to your agency website campaign report first and you know how to track, don't add more.” Send installation/expansion structure to the Huddle.
 
 ### Member: “Can I split my working budget between auto and fire?”
 

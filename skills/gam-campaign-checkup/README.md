@@ -13,7 +13,7 @@ This skill turns Claude into your Google Ads Mastery campaign coach. It evaluate
 ## What to have ready
 
 - A screenshot (or CSV) of your Google Ads Campaigns view showing total spend, conversions, and the date range (last 30 days is standard).
-- Your campaign report: on your State Farm computer, mysfdomain.com > Campaign > Statistics > SAME date range > download (orange button, bottom right). Filter to your Google Ads tracking URL only.
+- Your campaign report: on your personal computer, agency website dashboard > Campaign > Statistics > SAME date range > download (orange button, bottom right). Filter to your Google Ads tracking URL only.
 - Optional but powerful: households closed from Google Ads leads (from your CRM or commission tracker) and your own LTV per household.
 
 ## Support

@@ -31,7 +31,7 @@ If no calendar date is supplied, ask for one or propose the next practical date 
 
 Use this priority:
 
-1. **Missing verdict data:** pull/filter the mySFdomain report with matching dates.
+1. **Missing verdict data:** pull/filter the agency website report with matching dates.
 2. **Missing business outcome:** set up or repair Google Ads source tracking in CRM/commission tracker.
 3. **Meaningful Red search-term spend:** add the highest-impact clear Red term as a negative or apply the missing master list.
 4. **Clean terms but weak ad quality:** improve Ad Strength toward Excellent with state/city headlines, or upload agency photos after 30+ days.
@@ -44,7 +44,7 @@ Do not skip ahead. “Check search terms first. Then ad quality. Then bids.”
 
 ### Missing campaign report
 
-> I will download the mySFdomain Campaign > Statistics report, match the Google Ads dates, filter it to my campaign tracking URL, and bring that one completed report by **[date]**; I'll bring the result to the Wednesday Huddle on **[date]**.
+> I will download the agency website Campaign > Statistics report, match the Google Ads dates, filter it to my campaign tracking URL, and bring that one completed report by **[date]**; I'll bring the result to the Wednesday Huddle on **[date]**.
 
 This is one artifact-producing action despite its required retrieval steps.
 
@@ -74,7 +74,7 @@ At month end:
 
 1. Set and write the review date range.
 2. Pull Google Ads spend and 3-min+ ad-call conversions.
-3. Pull the mySFdomain report for exact same dates.
+3. Pull the agency website report for exact same dates.
 4. Filter to the campaign tracking URL.
 5. Record page views, quote starts, and phone clicks.
 6. Calculate Total Leads and CPQ.
